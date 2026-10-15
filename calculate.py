@@ -62,13 +62,20 @@ with (out/'iterations.csv').open('w') as f:
 with (out/'tables.tex').open('w') as f:
     for k,t,a,m,lo,hi,err,rmse in rows:
         f.write(f'{k} & {t:.4f} & {a:.4f} & {lo:.4f} & {hi:.4f} & {err:.4f} & {rmse:.4f} \\\\\n')
-print('E0, truth:', E0, truth)
-print('F RMS error, max error:', np.sqrt(np.mean((F-exact_F)**2)),
-      np.max(np.abs(F-exact_F)))
-print('reciprocity max:', np.max(np.abs(F-F.T)))
-print('steady min,max,relative RMS %:', steady.min(), steady.max(),
-      100*np.sqrt(np.mean((steady-truth)**2))/truth)
-print('first row:', F[0,:8])
+print(f'=== Базовый расчёт: R = {R} м, ρ = {rho}, Φ = {flux:.0f} лм ===')
+print(f'  Прямая освещённость E0      {E0:12.4f} лк')
+print(f'  Истинная освещённость E*    {truth:12.4f} лк')
+print(f'\nФорм-факторы: {N}×{N} участков, {rays} лучей на участок')
+print(f'  Точное значение 1/N         {1/N:12.6f}')
+print(f'  СКО отклонения от 1/N       {np.sqrt(np.mean((F-exact_F)**2)):12.6f}')
+print(f'  Макс. отклонение от 1/N     {np.max(np.abs(F-exact_F)):12.6f}')
+print(f'  Макс. |F - Fᵀ|              {np.max(np.abs(F-F.T)):12.6f}')
+print('  Первая строка F[0, :8]     ', ' '.join(f'{v:.5f}' for v in F[0, :8]))
+print('\nУстановившееся решение с форм-факторами трассировки')
+print(f'  Минимум                     {steady.min():12.4f} лк')
+print(f'  Максимум                    {steady.max():12.4f} лк')
+print(f'  Относительная СКО           '
+      f'{100*np.sqrt(np.mean((steady-truth)**2))/truth:12.4f} %')
 
 # Additional experiments change one physical parameter at a time.
 cases = [('A', 2., 0.90, 1000.), ('B', 1., 0.90, 1000.),
@@ -144,5 +151,14 @@ blocks['mc'] = tex_table(
     [[c[0]]+limits[c[0]] for c in cases])
 for name, body in blocks.items():
     (out/f'cases_{name}.tex').write_text(body, encoding='utf-8')
-print('Additional cases:', summary)
-print('Monte Carlo limits:', limits)
+print('\n=== Дополнительные наборы ===')
+print(f'{"Набор":>5} {"R, м":>5} {"ρ":>5} {"Φ, лм":>6} {"E0, лк":>9}'
+      f' {"E*, лк":>9} {"k(1%)":>6} {"k(0.1%)":>8}')
+for label, radius, reflectance, lumens, direct, true, n1, n01 in summary:
+    print(f'{label:>5} {radius:5.1f} {reflectance:5.2f} {lumens:6.0f}'
+          f' {direct:9.4f} {true:9.4f} {n1:6d} {n01:8d}')
+print('\nПредел итераций с форм-факторами трассировки')
+print(f'{"Набор":>5} {"Среднее, лк":>12} {"Мин., лк":>10} {"Макс., лк":>10}'
+      f' {"СКО, %":>7}')
+for label, (mean, lo, hi, rmse) in limits.items():
+    print(f'{label:>5} {mean:12.4f} {lo:10.4f} {hi:10.4f} {rmse:7.4f}')
