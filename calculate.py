@@ -22,35 +22,44 @@ for i in range(N):
     tangent = np.cross(ref, normal)
     tangent /= np.linalg.norm(tangent, axis=1)[:, None]
     bitangent = np.cross(normal, tangent)
-    u, az = rng.random(rays), 2*np.pi*rng.random(rays)
-    direction = (np.sqrt(u)[:, None] *
+    # Parabolic importance function p = 3cos^2(theta)/(2pi):
+    # cos(theta) = u^(1/3), u in (0, 1] keeps the weight finite.
+    u, az = 1 - rng.random(rays), 2*np.pi*rng.random(rays)
+    mu = np.cbrt(u)
+    direction = (np.sqrt(1-mu*mu)[:, None] *
                  (np.cos(az)[:, None]*tangent +
                    np.sin(az)[:, None]*bitangent) +
-                 np.sqrt(1-u)[:, None]*normal)
+                 mu[:, None]*normal)
+    # Weight (cos(theta)/pi) / p keeps the estimate unbiased.
+    weight = 2 / (3*mu)
     t = -2 * np.einsum('ij,ij->i', p, direction)
     hit = p + t[:, None]*direction
     jz = np.clip(((hit[:, 2]/R + 1)*nz/2).astype(int), 0, nz-1)
     jp = (np.mod(np.arctan2(hit[:, 1], hit[:, 0]), 2*np.pi)
           * nphi/(2*np.pi)).astype(int)
-    F[i] = np.bincount(jz*nphi+jp, minlength=N) / rays
+    F[i] = np.bincount(jz*nphi+jp, weights=weight, minlength=N) / rays
 
 # F[i,j] transports flux from patch i to patch j.
 # Areas are equal, hence the irradiance operator is F.T.
+# Weighted rows sum to 1 only on average, so the checks use exact_F.
 exact_F = np.full((N, N), 1/N)
-assert np.allclose(F.sum(axis=1), 1)
+sigma_F = np.sqrt((4/(3*N) - 1/N**2) / rays)
+sigma_row = np.sqrt(1/(3*rays))
 assert np.min(F) >= 0
 E = np.full(N, E0)
+Ea = np.full(N, E0)
 
 rows = []
 selected = {0, 1, 2, 3, 5, 10, 20, 30, 40, 50, 65, 80, 100}
 for k in range(101):
     analytic = E0*(1-rho**(k+1))/(1-rho)
-    assert abs(E.mean()-analytic) < 1e-10
+    assert abs(Ea.mean()-analytic) < 1e-10
     if k in selected:
         rows.append([k, truth, analytic, E.mean(), E.min(), E.max(),
                       100*rho**(k+1),
                       100*np.sqrt(np.mean((E-truth)**2))/truth])
     E = E0 + rho * (F.T @ E)
+    Ea = E0 + rho * (exact_F.T @ Ea)
 steady = np.linalg.solve(np.eye(N)-rho*F.T, np.full(N, E0))
 out = Path(__file__).resolve().parent
 np.savetxt(out/'form_factors.csv', F, delimiter=',')
@@ -61,17 +70,23 @@ with (out/'iterations.csv').open('w') as f:
     w.writerows(rows)
 with (out/'tables.tex').open('w') as f:
     for k,t,a,m,lo,hi,err,rmse in rows:
-        f.write(f'{k} & {t:.4f} & {a:.4f} & {lo:.4f} & {hi:.4f} & {err:.4f} & {rmse:.4f} \\\\\n')
+        f.write(f'{k} & {t:.4f} & {a:.4f} & {m:.4f} & {lo:.4f} & {hi:.4f} & {err:.4f} & {rmse:.4f} \\\\\n')
 print(f'=== Базовый расчёт: R = {R} м, ρ = {rho}, Φ = {flux:.0f} лм ===')
 print(f'  Прямая освещённость E0      {E0:12.4f} лк')
 print(f'  Истинная освещённость E*    {truth:12.4f} лк')
-print(f'\nФорм-факторы: {N}×{N} участков, {rays} лучей на участок')
+print(f'\nФорм-факторы: {N}×{N} участков, {rays} лучей на участок,'
+      ' p(ω) = 3cos²θ/(2π)')
 print(f'  Точное значение 1/N         {1/N:12.6f}')
 print(f'  СКО отклонения от 1/N       {np.sqrt(np.mean((F-exact_F)**2)):12.6f}')
+print(f'  Теоретическая СКО элемента  {sigma_F:12.6f}')
 print(f'  Макс. отклонение от 1/N     {np.max(np.abs(F-exact_F)):12.6f}')
 print(f'  Макс. |F - Fᵀ|              {np.max(np.abs(F-F.T)):12.6f}')
+print(f'  Суммы строк: мин. / макс.   {F.sum(axis=1).min():12.6f}'
+      f' / {F.sum(axis=1).max():.6f}')
+print(f'  Теоретическая СКО суммы     {sigma_row:12.6f}')
 print('  Первая строка F[0, :8]     ', ' '.join(f'{v:.5f}' for v in F[0, :8]))
 print('\nУстановившееся решение с форм-факторами трассировки')
+print(f'  Среднее                     {steady.mean():12.4f} лк')
 print(f'  Минимум                     {steady.min():12.4f} лк')
 print(f'  Максимум                    {steady.max():12.4f} лк')
 print(f'  Относительная СКО           '
@@ -89,10 +104,11 @@ for label, radius, reflectance, lumens in cases:
     direct = lumens / (4*np.pi*radius**2)
     true = direct / (1-reflectance)
     value = np.full(N, direct)
+    exact = np.full(N, direct)
     results[label] = {}
     for k in range(max(steps)+1):
         analytic = true*(1-reflectance**(k+1))
-        assert np.isclose(value.mean(), analytic, rtol=1e-12)
+        assert np.isclose(exact.mean(), analytic, rtol=1e-12)
         if k in steps:
             err = 100*reflectance**(k+1)
             rmse = 100*np.sqrt(np.mean((value-true)**2))/true
@@ -101,10 +117,13 @@ for label, radius, reflectance, lumens in cases:
             all_rows.append(row)
             results[label][k] = row
         value = direct + reflectance*(F.T @ value)
+        exact = direct + reflectance*(exact_F.T @ exact)
     limit = np.linalg.solve(np.eye(N)-reflectance*F.T,
                              np.full(N, direct))
+    exact_limit = np.linalg.solve(np.eye(N)-reflectance*exact_F.T,
+                                   np.full(N, direct))
     assert np.isclose((1-reflectance)*4*np.pi*radius**2
-                       *limit.mean(), lumens, rtol=1e-12)
+                       *exact_limit.mean(), lumens, rtol=1e-12)
     limits[label] = [limit.mean(), limit.min(), limit.max(),
                     100*np.sqrt(np.mean((limit-true)**2))/true]
     n1 = max(0, int(np.ceil(np.log(.01)/np.log(reflectance)))-1)
